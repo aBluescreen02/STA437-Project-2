@@ -76,7 +76,7 @@ ggplot() +
   labs(title = "Governance Indicators Over Time by Region",
        x = "Year", y = "Score", color = "Region", fill = "Region") +
   theme_minimal() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "right")
 
 # Count missing countries by year
 all_countries <- unique(df$country_code)
@@ -314,4 +314,125 @@ KMO(df %>% select(all_of(gov_cols)) %>% na.omit())
 cortest.bartlett(cor_matrix, n = nrow(df %>% na.omit()))
 
 # FA #####
+
+# Step 1: Determine number of factors via scree plot + parallel analysis
+fa_data <- df %>% select(all_of(gov_cols)) %>% na.omit()
+
+# Parallel analysis data
+pa <- fa.parallel(fa_data, fm = "ml", fa = "fa", plot = FALSE)
+
+# Parallel analysis
+pa <- fa.parallel(fa_data, fm = "ml", fa = "fa", plot = FALSE)
+
+pa_df <- data.frame(
+  factor         = seq_along(pa$fa.values),
+  observed       = pa$fa.values,
+  simulated_95   = pa$fa.sim,
+  simulated_mean = pa$fa.simr
+)
+
+n_factors <- sum(pa$fa.values > pa$fa.sim)
+
+# Add cumulative variance to pa_df
+pa_df <- pa_df %>%
+  mutate(cum_var = cumsum(pmax(observed, 0)) / sum(pmax(observed, 0)) * 100)
+
+# Scale factor: map 0-100% onto eigenvalue axis range
+y_max   <- max(pa_df$observed) * 1.1
+scale_f <- y_max / 100
+
+ggplot(pa_df, aes(x = factor)) +
+  annotate("rect", xmin = 0.5, xmax = n_factors + 0.5,
+           ymin = -Inf, ymax = Inf, fill = "steelblue", alpha = 0.1) +
+  geom_line(aes(y = observed, color = "Observed eigenvalues"), linewidth = 1) +
+  geom_point(aes(y = observed, color = "Observed eigenvalues"), size = 2.5) +
+  geom_line(aes(y = simulated_95, color = "95th pctl (null)"),
+            linetype = "dashed", linewidth = 0.8) +
+  geom_point(aes(y = simulated_95, color = "95th pctl (null)"),
+             shape = 17, size = 2) +
+  geom_line(aes(y = simulated_mean, color = "Mean (null)"),
+            linetype = "dotted", linewidth = 0.8) +
+  geom_hline(yintercept = 1, color = "gold3", linetype = "dotted", linewidth = 0.8) +
+  # Cumulative variance line on secondary axis
+  geom_line(aes(y = cum_var * scale_f, color = "Cumulative Variance"),
+            linewidth = 1, linetype = "longdash") +
+  geom_point(aes(y = cum_var * scale_f, color = "Cumulative Variance"), size = 2.5) +
+  annotate("text", x = max(pa_df$factor), y = 1,
+           label = "Kaiser criterion", color = "gold3",
+           hjust = 1.1, vjust = -0.5, size = 3.5) +
+  annotate("text", x = n_factors + 0.3, y = max(pa_df$observed) * 0.85,
+           label = paste(n_factors, "factors retained"),
+           color = "steelblue", hjust = -0.1, size = 3.5) +
+  scale_color_manual(values = c(
+    "Observed eigenvalues" = "steelblue",
+    "95th pctl (null)"     = "firebrick2",
+    "Mean (null)"          = "grey40",
+    "Cumulative Variance"  = "darkorchid"
+  )) +
+  scale_x_continuous(breaks = seq_along(pa$fa.values)) +
+  scale_y_continuous(
+    name     = "Eigenvalue",
+    sec.axis = sec_axis(~ . / scale_f, name = "Cumulative Variance (%)",
+                        breaks = seq(0, 100, 20),
+                        labels = paste0(seq(0, 100, 20), "%"))
+  ) +
+  labs(title = paste0("Parallel Analysis (n = ", nrow(fa_data), ", p = ", length(gov_cols), ")"),
+       x = "Component", color = NULL) +
+  theme_minimal() +
+  theme(plot.title       = element_text(face = "bold", hjust = 0.5),
+        legend.position  = "inside",
+        legend.position.inside = c(0.72, 0.55),
+        axis.title.y.right = element_text(color = "darkorchid"),
+        axis.text.y.right  = element_text(color = "darkorchid"))
+
+# Step 2: Fit FA with varimax (orthogonal) and promax (oblique) — compare both
+fa_varimax <- fa(fa_data, nfactors = 2, rotate = "varimax", fm = "ml")
+fa_promax  <- fa(fa_data, nfactors = 2, rotate = "promax",  fm = "ml")
+fa_none    <- fa(fa_data, nfactors = 2, rotate = "none",    fm = "ml")
+
+# Function to convert loadings to long format
+loadings_long <- function(fa_model, rotation_name) {
+  fa_model$loadings[] %>%
+    as.data.frame() %>%
+    rownames_to_column("indicator") %>%
+    pivot_longer(-indicator, names_to = "factor", values_to = "loading") %>%
+    mutate(rotation = rotation_name)
+}
+
+# Combine all three
+all_loadings <- bind_rows(
+  loadings_long(fa_none,    "No Rotation"),
+  loadings_long(fa_varimax, "Varimax"),
+  loadings_long(fa_promax,  "Promax")
+) %>%
+  mutate(rotation = factor(rotation, levels = c("No Rotation", "Varimax", "Promax")))
+
+# Side-by-side heatmaps
+ggplot(all_loadings, aes(x = factor, y = indicator, fill = loading)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(loading, 2)), size = 3.5, fontface = "bold") +
+  scale_fill_gradient2(low  = "steelblue", mid = "white", high = "firebrick2",
+                       midpoint = 0, limits = c(-1, 1), name = "Loading") +
+  facet_wrap(~ rotation, ncol = 3) +
+  labs(title = "Factor Loadings by Rotation Method",
+       x = "Factor", y = NULL) +
+  theme_minimal() +
+  theme(plot.title      = element_text(face = "bold", hjust = 0.5),
+        strip.text      = element_text(face = "bold", size = 11),
+        axis.text.y     = element_text(size = 10),
+        legend.position = "right")
+
+# Step 3: Extract factor scores and join back to df
+fa_scores <- as.data.frame(fa_varimax$scores) %>%
+  rename(Factor1 = ML1, Factor2 = ML2)
+
+df_fa <- df %>%
+  na.omit() %>%
+  bind_cols(fa_scores)
+
+# Step 4: Compare factor scores by region
+df_fa %>%
+  group_by(region) %>%
+  summarise(across(c(Factor1, Factor2), ~ mean(.x, na.rm = TRUE))) %>%
+  arrange(desc(Factor1))
 
