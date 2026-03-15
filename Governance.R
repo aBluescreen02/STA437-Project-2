@@ -4,9 +4,12 @@ library(ggcorrplot)
 library(patchwork)
 library(psych)
 library(DescTools)
+library(maps)
 # library(MVN)
 
 # ── 1. DATA LOADING & PREPARATION ── #####
+
+region_map <- read_excel("region_reference.xlsx", sheet = "Region Reference")
 
 df <- read.csv('governance_data.csv') %>%
   rename(
@@ -22,6 +25,82 @@ df <- read.csv('governance_data.csv') %>%
       select(country_code, region),
     by = "country_code"
   )
+
+df %>%
+  distinct(country_code, region) %>%
+  count(region, name = "n_countries") %>%
+  arrange(desc(n_countries))
+
+# Get world map data
+world_map <- map_data("world") %>%
+  # Standardize country names to match region_map
+  mutate(region = recode(region,
+                         "USA"                          = "United States",
+                         "UK"                           = "United Kingdom",
+                         "South Korea"                  = "Korea, Rep.",
+                         "North Korea"                  = "Korea, Dem. People's Rep.",
+                         "Russia"                       = "Russian Federation",
+                         "Iran"                         = "Iran, Islamic Rep.",
+                         "Syria"                        = "Syrian Arab Republic",
+                         "Venezuela"                    = "Venezuela, RB",
+                         "Yemen"                        = "Yemen, Rep.",
+                         "Egypt"                        = "Egypt, Arab Rep.",
+                         "Democratic Republic of the Congo" = "Congo, Dem. Rep.",
+                         "Republic of Congo"            = "Congo, Rep.",
+                         "Ivory Coast"                  = "Cote d'Ivoire",
+                         "Tanzania"                     = "Tanzania",
+                         "Laos"                         = "Lao PDR",
+                         "Vietnam"                      = "Viet Nam",
+                         "Taiwan"                       = "Taiwan, China",
+                         "Kyrgyzstan"                   = "Kyrgyz Republic",
+                         "Slovakia"                     = "Slovak Republic",
+                         "Czechia"                      = "Czechia",
+                         "Turkey"                       = "Turkiye",
+                         "Gambia"                       = "Gambia, The",
+                         "Bahamas"                      = "Bahamas, The",
+                         "Micronesia"                   = "Micronesia, Fed. Sts.",
+                         "Bolivia"                      = "Bolivia",
+                         "Trinidad"                     = "Trinidad and Tobago",
+                         "Tobago"                       = "Trinidad and Tobago"
+  ))
+
+# Join region classifications
+world_regions <- world_map %>%
+  left_join(
+    region_map %>% select(country = country, region_group = region),
+    by = c("region" = "country")
+  )
+
+# Region color palette
+region_colors <- c(
+  "North America"                 = "#4E79A7",
+  "Central America & Caribbean"   = "#76B7B2",
+  "South America"                 = "#59A14F",
+  "Western Europe"                = "#F28E2B",
+  "Eastern Europe & Central Asia" = "#E15759",
+  "Middle East & North Africa"    = "#B07AA1",
+  "Sub-Saharan Africa"            = "#FF9DA7",
+  "South Asia"                    = "#9C755F",
+  "East Asia & Pacific"           = "#BAB0AC"
+)
+
+ggplot(world_regions, aes(x = long, y = lat, group = group, fill = region_group)) +
+  geom_polygon(color = "white", linewidth = 0.1) +
+  scale_fill_manual(values  = region_colors,
+                    na.value = "grey85",
+                    name    = "Region") +
+  coord_fixed(1) +
+  labs() +
+  theme_void() +
+  theme(
+    plot.title      = element_text(face = "bold", hjust = 0.5, size = 13),
+    legend.position = "bottom",
+    legend.title    = element_text(face = "bold", size = 14),
+    legend.text     = element_text(size = 14)
+  ) +
+  guides(fill = guide_legend(nrow = 3))
+
+# ggsave("region_map.png", width = 16, height = 9, dpi = 300)
 
 gov_cols <- c("Control of Corruption", "Gov't Effectiveness", "Political Stability",
               "Regulatory Quality", "Rule of Law", "Voice & Accountability")
