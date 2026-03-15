@@ -422,17 +422,96 @@ ggplot(all_loadings, aes(x = factor, y = indicator, fill = loading)) +
         axis.text.y     = element_text(size = 10),
         legend.position = "right")
 
-# Step 3: Extract factor scores and join back to df
-fa_scores <- as.data.frame(fa_varimax$scores) %>%
+# Extract promax factor scores and join region
+fa_scores <- as.data.frame(fa_promax$scores) %>%
   rename(Factor1 = ML1, Factor2 = ML2)
 
 df_fa <- df %>%
   na.omit() %>%
   bind_cols(fa_scores)
 
-# Step 4: Compare factor scores by region
-df_fa %>%
+# Compute regional centroids
+region_centroids <- df_fa %>%
   group_by(region) %>%
-  summarise(across(c(Factor1, Factor2), ~ mean(.x, na.rm = TRUE))) %>%
-  arrange(desc(Factor1))
+  summarise(Factor1 = mean(Factor1, na.rm = TRUE),
+            Factor2 = mean(Factor2, na.rm = TRUE))
 
+# Biplot be region
+ggplot() +
+  geom_point(data = df_fa,
+             aes(x = Factor1, y = Factor2, color = region),
+             alpha = 0.3, size = 1) +
+  geom_point(data = region_centroids,
+             aes(x = Factor1, y = Factor2, color = region),
+             size = 5, shape = 18) +
+  geom_label(data = region_centroids,
+             aes(x = Factor1, y = Factor2, label = region, color = region),
+             size = 2.5, fontface = "bold", nudge_y = 0.15,
+             label.padding = unit(0.15, "lines"), show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title    = "Factor Score Biplot by Region (Promax Rotation)",
+       x        = "Factor 1 — State Capacity",
+       y        = "Factor 2 — Political Legitimacy & Civil Freedom",
+       color    = "Region") +
+  theme_minimal() +
+  theme(plot.title      = element_text(face = "bold", hjust = 0.5),
+        legend.position = "right")
+
+# Individual biplots by region over time #####
+
+# Compute early and recent centroids per region in factor space
+early_scores <- as.data.frame(fa(df %>%
+                                   filter(year >= 1996 & year <= 2000) %>%
+                                   na.omit() %>%
+                                   select(all_of(gov_cols)),
+                                 nfactors = 2, rotate = "promax", fm = "ml")$scores) %>%
+  rename(Factor1 = ML1, Factor2 = ML2)
+
+recent_scores <- as.data.frame(fa(df %>%
+                                    filter(year >= 2019 & year <= 2023) %>%
+                                    na.omit() %>%
+                                    select(all_of(gov_cols)),
+                                  nfactors = 2, rotate = "promax", fm = "ml")$scores) %>%
+  rename(Factor1 = ML1, Factor2 = ML2)
+
+early_centroids <- df %>%
+  filter(year >= 1996 & year <= 2000) %>%
+  na.omit() %>%
+  bind_cols(early_scores) %>%
+  group_by(region) %>%
+  summarise(Factor1 = mean(Factor1), Factor2 = mean(Factor2)) %>%
+  mutate(window = "1996–2000")
+
+recent_centroids <- df %>%
+  filter(year >= 2019 & year <= 2023) %>%
+  na.omit() %>%
+  bind_cols(recent_scores) %>%
+  group_by(region) %>%
+  summarise(Factor1 = mean(Factor1), Factor2 = mean(Factor2)) %>%
+  mutate(window = "2019–2023")
+
+window_centroids <- bind_rows(early_centroids, recent_centroids)
+
+# Biplot faceted by region with trajectories + window centroids
+ggplot(df_fa, aes(x = Factor1, y = Factor2, color = year)) +
+  geom_point(alpha = 0.6, size = 1) +
+  geom_path(aes(group = country_code), alpha = 0.3, linewidth = 0.3) +
+  # Window centroids
+  geom_point(data = window_centroids,
+             aes(x = Factor1, y = Factor2, shape = window),
+             color = "black", size = 4) +
+  geom_line(data = window_centroids,
+            aes(x = Factor1, y = Factor2, group = region),
+            color = "black", linewidth = 0.8, linetype = "dashed",
+            arrow = arrow(length = unit(0.2, "cm"), type = "closed")) +
+  facet_wrap(~ region, ncol = 3) +
+  scale_color_gradient(low = "firebrick2", high = "steelblue") +
+  scale_shape_manual(values = c("1996–2000" = 15, "2019–2023" = 17)) +
+  labs(title  = "Governance Trajectory by Region (Promax Factor Space)",
+       x      = "Factor 1 — State Capacity",
+       y      = "Factor 2 — Political Legitimacy & Civil Freedom",
+       color  = "Year", shape = "Window") +
+  theme_minimal() +
+  theme(plot.title      = element_text(face = "bold", hjust = 0.5),
+        legend.position = "right",
+        strip.text      = element_text(face = "bold", size = 9))
