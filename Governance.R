@@ -1,9 +1,14 @@
 library(tidyverse)
 library(readxl)
+library(ggcorrplot)
+library(patchwork)
+library(psych)
+library(DescTools)
+# library(MVN)
 
-df <- read.csv('governance_data.csv')
+# ── 1. DATA LOADING & PREPARATION ── #####
 
-df <- df %>%
+df <- read.csv('governance_data.csv') %>%
   rename(
     "Control of Corruption"  = control_corruption,
     "Gov't Effectiveness"    = govt_effectiveness,
@@ -11,24 +16,63 @@ df <- df %>%
     "Regulatory Quality"     = regulatory_quality,
     "Rule of Law"            = rule_of_law,
     "Voice & Accountability" = voice_accountability
+  ) %>%
+  left_join(
+    read_excel("region_reference.xlsx", sheet = "Region Reference") %>%
+      select(country_code, region),
+    by = "country_code"
   )
 
-# Update gov_cols to match new names
 gov_cols <- c("Control of Corruption", "Gov't Effectiveness", "Political Stability",
               "Regulatory Quality", "Rule of Law", "Voice & Accountability")
 
 cat("Observations:", nrow(df), "\n")
-cat("Countries:", length(unique(df$country)), "\n")
-cat("Year range:", min(df$year), "-", max(df$year), "\n")
+cat("Countries:",    length(unique(df$country)), "\n")
+cat("Year range:",   min(df$year), "-", max(df$year), "\n")
 
-# Load region mapping
-region_map <- read_excel("region_reference.xlsx", sheet = "Region Reference")
+# ── 2. TIME WINDOW AGGREGATION ── #####
 
-# Join into your main dataframe
-df <- df %>% left_join(region_map %>% select(country_code, region), by = "country_code")
+country_scores_early <- df %>%
+  filter(year >= 1996 & year <= 2000) %>%
+  group_by(country, country_code, region) %>%
+  summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  mutate(composite_score_early = rowSums(across(all_of(gov_cols)), na.rm = TRUE))
 
-# Per country time series analysis #####
+country_scores_recent <- df %>%
+  filter(year >= 2019 & year <= 2023) %>%
+  group_by(country, country_code, region) %>%
+  summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  mutate(composite_score_recent = rowSums(across(all_of(gov_cols)), na.rm = TRUE))
 
+country_scores_combined <- country_scores_early %>%
+  rename_with(~ paste0(.x, "_early"), all_of(gov_cols)) %>%
+  left_join(
+    country_scores_recent %>%
+      rename_with(~ paste0(.x, "_recent"), all_of(gov_cols)) %>%
+      select(country_code, ends_with("_recent"), composite_score_recent),
+    by = "country_code"
+  ) %>%
+  mutate(score_diff = composite_score_recent - composite_score_early) %>%
+  arrange(desc(score_diff))
+
+# ── 3. DATA INSPECTION ── #####
+
+all_countries <- unique(df$country_code)
+
+missing_by_year <- df %>%
+  group_by(year) %>%
+  summarise(
+    countries_present = n_distinct(country_code),
+    missing_count     = length(all_countries) - n_distinct(country_code),
+    missing_countries = list(setdiff(all_countries, country_code))
+  ) %>%
+  arrange(year)
+
+missing_by_year
+
+# ── 4. EXPLORATORY DATA ANALYSIS ── #####
+
+# 4a. Per-country time series
 country_list <- df %>% split(.$country_code)
 
 plot_country <- function(code) {
@@ -44,12 +88,10 @@ plot_country <- function(code) {
     theme(legend.position = "bottom")
 }
 
-# Usage
 plot_country("CAN")
 plot_country("USA")
 
-# Parallel Coordinates Plot
-
+# 4b. Regional time series with IQR ribbon
 country_means_time <- df %>%
   pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
   group_by(country_code, region, year, indicator) %>%
@@ -72,135 +114,59 @@ ggplot() +
             linewidth = 1.2) +
   facet_wrap(~ indicator, ncol = 3) +
   scale_color_brewer(palette = "Set3") +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_brewer(palette  = "Set3") +
   labs(title = "Governance Indicators Over Time by Region",
        x = "Year", y = "Score", color = "Region", fill = "Region") +
   theme_minimal() +
   theme(legend.position = "right")
 
-# Count missing countries by year
-all_countries <- unique(df$country_code)
-
-missing_by_year <- df %>%
-  group_by(year) %>%
-  summarise(
-    countries_present  = n_distinct(country_code),
-    missing_count      = length(all_countries) - n_distinct(country_code),
-    missing_countries  = list(setdiff(all_countries, country_code))
-  ) %>%
-  arrange(year)
-
-missing_by_year
-
-# 1996-2000 window
-country_scores_early <- df %>%
-  filter(year >= 1996 & year <= 2000) %>%
-  group_by(country, country_code, region) %>%
-  summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
-  mutate(composite_score_early = rowSums(across(all_of(gov_cols)), na.rm = TRUE))
-
-# 2019-2023 window
-country_scores_recent <- df %>%
-  filter(year >= 2019 & year <= 2023) %>%
-  group_by(country, country_code, region) %>%
-  summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
-  mutate(composite_score_recent = rowSums(across(all_of(gov_cols)), na.rm = TRUE))
-
-# Join both windows: keep all gov_col means from both periods + composite diff only
-country_scores_combined <- country_scores_early %>%
-  rename_with(~ paste0(.x, "_early"), all_of(gov_cols)) %>%
-  left_join(
-    country_scores_recent %>%
-      rename_with(~ paste0(.x, "_recent"), all_of(gov_cols)) %>%
-      select(country_code, ends_with("_recent"), composite_score_recent),
-    by = "country_code"
-  ) %>%
-  mutate(score_diff = composite_score_recent - composite_score_early) %>%
-  arrange(desc(score_diff))
-
-# Plotting #####
-
-# Pivot both windows to long format for plotting
-early_long <- country_scores_early %>%
-  pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
-  mutate(window = "1996-2000")
-
-recent_long <- country_scores_recent %>%
-  pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
-  mutate(window = "2019-2023")
-
-# Combine both windows
-both_windows <- bind_rows(early_long, recent_long)
-
-# Overlapping boxplots by indicator
-ggplot(both_windows, aes(x = indicator, y = score, fill = window)) +
-  geom_boxplot(alpha = 0.7, outlier.size = 0.8, position = position_dodge(0.8)) +
-  scale_fill_manual(values = c("1996-2000" = "steelblue", "2019-2023" = "tomato")) +
-  scale_x_discrete() +
-  labs(
-    title = "Governance Indicators: 1996–2000 vs 2019–2023",
-    x     = "Indicator",
-    y     = "Score",
-    fill  = "Year Window"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-# Regional means #####
-
-region_means <- df %>%
-  group_by(region) %>%
-  summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
-  mutate(composite_score = rowSums(across(all_of(gov_cols)), na.rm = TRUE)) %>%
-  arrange(desc(composite_score))
-
-# Comparison to motivate regional means
-
+# 4c. Indicator distribution boxplots
 df %>%
   pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
   ggplot(aes(x = indicator, y = score, fill = indicator)) +
   geom_boxplot(alpha = 0.8, outlier.size = 0.8, show.legend = FALSE) +
   scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
-  labs(title = "Distribution of Governance Indicators",
-       x = NULL, y = "Score") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(size = 8))
+  labs(title = "Distribution of Governance Indicators", x = NULL, y = "Score") +
+  theme_minimal()
 
-region_means %>%
-  pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "mean_score") %>%
-  ggplot(aes(x = indicator, y = reorder(region, mean_score, FUN = mean), fill = mean_score)) +
-  geom_tile() +
-  geom_text(aes(label = round(mean_score, 2)), size = 3) +
-  scale_fill_gradient2(low = "firebrick2", mid = "white", high = "steelblue", midpoint = 0) +
+# 4d. Time window boxplots by indicator
+bind_rows(
+  country_scores_early  %>%
+    pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
+    mutate(window = "1996–2000"),
+  country_scores_recent %>%
+    pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
+    mutate(window = "2019–2023")
+) %>%
+  ggplot(aes(x = indicator, y = score, fill = window)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.8, position = position_dodge(0.8)) +
+  scale_fill_manual(values = c("1996–2000" = "steelblue", "2019–2023" = "tomato")) +
   scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
-  labs(title = "Mean Governance Score by Region and Indicator",
-       x = NULL, y = NULL, fill = "Mean Score") +
+  labs(title = "Governance Indicators: 1996–2000 vs 2019–2023",
+       x = "Indicator", y = "Score", fill = "Year Window") +
   theme_minimal() +
-  theme(axis.text.x = element_text(size = 8))
+  theme(legend.position = "bottom")
 
-# Region mean boxplots
-
-# Plot 1: Side-by-side early vs recent composite by region
+# 4e. Regional composite boxplots
 country_scores_combined %>%
   select(country, country_code, region, composite_score_early, composite_score_recent) %>%
   pivot_longer(cols = c(composite_score_early, composite_score_recent),
                names_to = "window", values_to = "composite") %>%
   mutate(window = recode(window,
                          "composite_score_early"  = "1996–2000",
-                         "composite_score_recent" = "2019–2023"
-  )) %>%
+                         "composite_score_recent" = "2019–2023")) %>%
   ggplot(aes(x = reorder(region, composite, FUN = median), y = composite, fill = window)) +
   geom_boxplot(alpha = 0.8, outlier.size = 0.8, position = position_dodge(0.8)) +
-  geom_jitter(aes(group = window), position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
+  geom_jitter(aes(group = window),
+              position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
               size = 0.7, alpha = 0.4) +
   coord_flip() +
   scale_fill_manual(values = c("1996–2000" = "steelblue", "2019–2023" = "tomato")) +
-  labs(title = "Composite Governance Score by Region: Early vs Recent",
+  labs(title = "Composite Score by Region: Early vs Recent",
        x = NULL, y = "Composite Score", fill = "Window") +
   theme_minimal() +
   theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
 
-# Plot 2: Score difference (recent - early) by region
 country_scores_combined %>%
   ggplot(aes(x = reorder(region, score_diff, FUN = median), y = score_diff, fill = region)) +
   geom_boxplot(alpha = 0.8, outlier.size = 0.8, show.legend = FALSE) +
@@ -213,7 +179,6 @@ country_scores_combined %>%
   theme_minimal() +
   theme(plot.title = element_text(face = "bold"))
 
-# Plot 3: Overall composite (all years) by region
 df %>%
   mutate(composite = rowSums(across(all_of(gov_cols)), na.rm = TRUE)) %>%
   ggplot(aes(x = reorder(region, composite, FUN = median), y = composite, fill = region)) +
@@ -221,79 +186,70 @@ df %>%
   geom_boxplot(width = 0.1, alpha = 0.4, outlier.shape = NA, show.legend = FALSE) +
   coord_flip() +
   scale_fill_brewer(palette = "Set3") +
-  labs(title = "Overall Composite Governance Score by Region (1996–2023)",
+  labs(title = "Overall Composite Score by Region (1996–2023)",
        x = NULL, y = "Composite Score") +
   theme_minimal() +
   theme(plot.title = element_text(face = "bold"))
 
-# Correlation plots
+# 4f. Regional mean heatmap
+region_means <- df %>%
+  group_by(region) %>%
+  summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  mutate(composite_score = rowSums(across(all_of(gov_cols)), na.rm = TRUE)) %>%
+  arrange(desc(composite_score))
 
-library(ggcorrplot)
+region_means %>%
+  pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "mean_score") %>%
+  ggplot(aes(x = indicator, y = reorder(region, mean_score, FUN = mean), fill = mean_score)) +
+  geom_tile() +
+  geom_text(aes(label = round(mean_score, 2)), size = 3) +
+  scale_fill_gradient2(low = "firebrick2", mid = "white", high = "steelblue", midpoint = 0) +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  labs(title = "Mean Governance Score by Region and Indicator",
+       x = NULL, y = NULL, fill = "Mean Score") +
+  theme_minimal()
 
+# ── 5. ASSUMPTION TESTING ── #####
+
+# 5a. Correlation matrix
 cor_matrix <- df %>%
   select(all_of(gov_cols)) %>%
   cor(use = "complete.obs")
 
-# All data corr plot
-ggcorrplot(cor_matrix,
-           method   = "square",
-           type     = "full",        
-           lab      = TRUE,
-           lab_size = 4) +
+ggcorrplot(cor_matrix, method = "square", type = "full", lab = TRUE, lab_size = 4) +
   scale_x_discrete(limits = rev, guide = guide_axis(n.dodge = 2)) +
   scale_fill_gradient2(name = "Pearson\nCorrelation",
-                       low  = "steelblue",
-                       mid  = "white",
-                       high = "firebrick2",
-                       midpoint = 0,
-                       limits = c(-1, 1)) +
+                       low = "steelblue", mid = "white", high = "firebrick2",
+                       midpoint = 0, limits = c(-1, 1)) +
   theme(axis.text.x = element_text(size = 10, angle = 0, hjust = 0.5),
         axis.text.y = element_text(size = 10))
 
-# Compute correlation matrix per region
+# 5b. Correlation by region
 region_cor_plots <- df %>%
   group_by(region) %>%
   group_map(~ {
-    cor_m <- .x %>%
-      select(all_of(gov_cols)) %>%
-      cor(use = "complete.obs")
-    
-    ggcorrplot(cor_m,
-               method   = "square",
-               type     = "full",
-               lab      = TRUE,
-               lab_size = 2) +
+    cor_m <- .x %>% select(all_of(gov_cols)) %>% cor(use = "complete.obs")
+    ggcorrplot(cor_m, method = "square", type = "full", lab = TRUE, lab_size = 2) +
       scale_x_discrete(limits = rev, guide = guide_axis(n.dodge = 2)) +
       scale_fill_gradient2(name = "Pearson\nCorrelation",
-                           low  = "steelblue",
-                           mid  = "white",
-                           high = "firebrick2",
-                           midpoint = 0,
-                           limits = c(-1, 1)) +
+                           low = "steelblue", mid = "white", high = "firebrick2",
+                           midpoint = 0, limits = c(-1, 1)) +
       labs(title = .y$region) +
-      theme(axis.text.x = element_text(size = 5, angle = 0, hjust = 0.5),
-            axis.text.y = element_text(size = 5),
-            plot.title  = element_text(size = 8, face = "bold"),
+      theme(axis.text.x     = element_text(size = 5, angle = 0, hjust = 0.5),
+            axis.text.y     = element_text(size = 5),
+            plot.title      = element_text(size = 8, face = "bold"),
             legend.position = "none")
   }, .keep = TRUE)
 
-# Arrange all 9 regions in a grid
-library(patchwork)
 wrap_plots(region_cor_plots, ncol = 3) +
   plot_annotation(title = "Correlation Between Governance Indicators by Region",
                   theme = theme(plot.title = element_text(face = "bold", size = 13)))
-  
-# Normality Testing #####
 
-# library(MVN)
-# mvn(df %>% select(all_of(gov_cols)), mvnTest = "mardia")
-# mvn(df %>% select(all_of(gov_cols)), mvnTest = "hz")
-# 
-# mvn(df %>% select(all_of(gov_cols)), mvnTest = "mardia", multivariatePlot = "qq")
+# 5c. Normality — Mardia's test + QQ plot + negentropy
 
-library(DescTools)
+# Mardia's test
+# mardia_result <- mvn(fa_data, mvnTest = "mardia", multivariatePlot = "qq")
 
-# Negentropy per indicator (approximation via kurtosis)
 neg_entropy <- df %>%
   select(all_of(gov_cols)) %>%
   summarise(across(everything(), ~ (1/12) * mean((scale(.x))^3, na.rm = TRUE)^2 +
@@ -303,25 +259,15 @@ neg_entropy <- df %>%
 
 neg_entropy
 
-# Sampling Adequecy #####
-
-library(psych)
-
-# Kaiser-Meyer-Olkin (KMO) test
-KMO(df %>% select(all_of(gov_cols)) %>% na.omit())
-
-# Bartlett's test of sphericity
-cortest.bartlett(cor_matrix, n = nrow(df %>% na.omit()))
-
-# FA #####
-
-# Step 1: Determine number of factors via scree plot + parallel analysis
+# 5d. Sampling adequacy
 fa_data <- df %>% select(all_of(gov_cols)) %>% na.omit()
 
-# Parallel analysis data
-pa <- fa.parallel(fa_data, fm = "ml", fa = "fa", plot = FALSE)
+KMO(fa_data)
+cortest.bartlett(cor_matrix, n = nrow(fa_data))
 
-# Parallel analysis
+# ── 6. FACTOR ANALYSIS ── #####
+
+# 6a. Parallel analysis
 pa <- fa.parallel(fa_data, fm = "ml", fa = "fa", plot = FALSE)
 
 pa_df <- data.frame(
@@ -329,68 +275,54 @@ pa_df <- data.frame(
   observed       = pa$fa.values,
   simulated_95   = pa$fa.sim,
   simulated_mean = pa$fa.simr
-)
-
-n_factors <- sum(pa$fa.values > pa$fa.sim)
-
-# Add cumulative variance to pa_df
-pa_df <- pa_df %>%
+) %>%
   mutate(cum_var = cumsum(pmax(observed, 0)) / sum(pmax(observed, 0)) * 100)
 
-# Scale factor: map 0-100% onto eigenvalue axis range
-y_max   <- max(pa_df$observed) * 1.1
-scale_f <- y_max / 100
+n_factors <- 2
+y_max     <- max(pa_df$observed) * 1.1
+scale_f   <- y_max / 100
 
 ggplot(pa_df, aes(x = factor)) +
   annotate("rect", xmin = 0.5, xmax = n_factors + 0.5,
            ymin = -Inf, ymax = Inf, fill = "steelblue", alpha = 0.1) +
-  geom_line(aes(y = observed, color = "Observed eigenvalues"), linewidth = 1) +
-  geom_point(aes(y = observed, color = "Observed eigenvalues"), size = 2.5) +
-  geom_line(aes(y = simulated_95, color = "95th pctl (null)"),
-            linetype = "dashed", linewidth = 0.8) +
-  geom_point(aes(y = simulated_95, color = "95th pctl (null)"),
-             shape = 17, size = 2) +
-  geom_line(aes(y = simulated_mean, color = "Mean (null)"),
-            linetype = "dotted", linewidth = 0.8) +
-  geom_hline(yintercept = 1, color = "gold3", linetype = "dotted", linewidth = 0.8) +
-  # Cumulative variance line on secondary axis
-  geom_line(aes(y = cum_var * scale_f, color = "Cumulative Variance"),
-            linewidth = 1, linetype = "longdash") +
+  geom_line(aes(y = observed,          color = "Observed eigenvalues"), linewidth = 1) +
+  geom_point(aes(y = observed,         color = "Observed eigenvalues"), size = 2.5) +
+  geom_line(aes(y = simulated_95,      color = "95th pctl (null)"),  linetype = "dashed",  linewidth = 0.8) +
+  geom_point(aes(y = simulated_95,     color = "95th pctl (null)"),  shape = 17, size = 2) +
+  geom_line(aes(y = simulated_mean,    color = "Mean (null)"),        linetype = "dotted",  linewidth = 0.8) +
+  geom_line(aes(y = cum_var * scale_f, color = "Cumulative Variance"), linewidth = 1, linetype = "longdash") +
   geom_point(aes(y = cum_var * scale_f, color = "Cumulative Variance"), size = 2.5) +
+  geom_hline(yintercept = 1, color = "gold3", linetype = "dotted", linewidth = 0.8) +
   annotate("text", x = max(pa_df$factor), y = 1,
-           label = "Kaiser criterion", color = "gold3",
-           hjust = 1.1, vjust = -0.5, size = 3.5) +
+           label = "Kaiser criterion", color = "gold3", hjust = 1.1, vjust = -0.5, size = 3.5) +
   annotate("text", x = n_factors + 0.3, y = max(pa_df$observed) * 0.85,
            label = paste(n_factors, "factors retained"),
            color = "steelblue", hjust = -0.1, size = 3.5) +
-  scale_color_manual(values = c(
-    "Observed eigenvalues" = "steelblue",
-    "95th pctl (null)"     = "firebrick2",
-    "Mean (null)"          = "grey40",
-    "Cumulative Variance"  = "darkorchid"
-  )) +
+  scale_color_manual(values = c("Observed eigenvalues" = "steelblue",
+                                "95th pctl (null)"     = "firebrick2",
+                                "Mean (null)"          = "grey40",
+                                "Cumulative Variance"  = "darkorchid")) +
   scale_x_continuous(breaks = seq_along(pa$fa.values)) +
   scale_y_continuous(
     name     = "Eigenvalue",
     sec.axis = sec_axis(~ . / scale_f, name = "Cumulative Variance (%)",
                         breaks = seq(0, 100, 20),
-                        labels = paste0(seq(0, 100, 20), "%"))
-  ) +
+                        labels = paste0(seq(0, 100, 20), "%"))) +
   labs(title = paste0("Parallel Analysis (n = ", nrow(fa_data), ", p = ", length(gov_cols), ")"),
        x = "Component", color = NULL) +
   theme_minimal() +
-  theme(plot.title       = element_text(face = "bold", hjust = 0.5),
-        legend.position  = "inside",
+  theme(plot.title             = element_text(face = "bold", hjust = 0.5),
+        legend.position        = "inside",
         legend.position.inside = c(0.72, 0.55),
-        axis.title.y.right = element_text(color = "darkorchid"),
-        axis.text.y.right  = element_text(color = "darkorchid"))
+        axis.title.y.right     = element_text(color = "darkorchid"),
+        axis.text.y.right      = element_text(color = "darkorchid"))
 
-# Step 2: Fit FA with varimax (orthogonal) and promax (oblique) — compare both
+# 6b. Fit FA models
+fa_none    <- fa(fa_data, nfactors = 2, rotate = "none",    fm = "ml")
 fa_varimax <- fa(fa_data, nfactors = 2, rotate = "varimax", fm = "ml")
 fa_promax  <- fa(fa_data, nfactors = 2, rotate = "promax",  fm = "ml")
-fa_none    <- fa(fa_data, nfactors = 2, rotate = "none",    fm = "ml")
 
-# Function to convert loadings to long format
+# 6c. Loading heatmaps
 loadings_long <- function(fa_model, rotation_name) {
   fa_model$loadings[] %>%
     as.data.frame() %>%
@@ -399,30 +331,28 @@ loadings_long <- function(fa_model, rotation_name) {
     mutate(rotation = rotation_name)
 }
 
-# Combine all three
-all_loadings <- bind_rows(
+bind_rows(
   loadings_long(fa_none,    "No Rotation"),
   loadings_long(fa_varimax, "Varimax"),
   loadings_long(fa_promax,  "Promax")
 ) %>%
-  mutate(rotation = factor(rotation, levels = c("No Rotation", "Varimax", "Promax")))
-
-# Side-by-side heatmaps
-ggplot(all_loadings, aes(x = factor, y = indicator, fill = loading)) +
+  mutate(rotation = factor(rotation, levels = c("No Rotation", "Varimax", "Promax"))) %>%
+  ggplot(aes(x = factor, y = indicator, fill = loading)) +
   geom_tile(color = "white") +
   geom_text(aes(label = round(loading, 2)), size = 3.5, fontface = "bold") +
-  scale_fill_gradient2(low  = "steelblue", mid = "white", high = "firebrick2",
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "firebrick2",
                        midpoint = 0, limits = c(-1, 1), name = "Loading") +
   facet_wrap(~ rotation, ncol = 3) +
-  labs(title = "Factor Loadings by Rotation Method",
-       x = "Factor", y = NULL) +
+  labs(title = "Factor Loadings by Rotation Method", x = "Factor", y = NULL) +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         strip.text      = element_text(face = "bold", size = 11),
         axis.text.y     = element_text(size = 10),
         legend.position = "right")
 
-# Extract promax factor scores and join region
+# ── 7. INTERPRETATION — FACTOR SCORE BIPLOTS ── #####
+
+# 7a. Extract promax scores and join to df
 fa_scores <- as.data.frame(fa_promax$scores) %>%
   rename(Factor1 = ML1, Factor2 = ML2)
 
@@ -430,13 +360,12 @@ df_fa <- df %>%
   na.omit() %>%
   bind_cols(fa_scores)
 
-# Compute regional centroids
+# 7b. Global biplot with regional centroids
 region_centroids <- df_fa %>%
   group_by(region) %>%
   summarise(Factor1 = mean(Factor1, na.rm = TRUE),
             Factor2 = mean(Factor2, na.rm = TRUE))
 
-# Biplot be region
 ggplot() +
   geom_point(data = df_fa,
              aes(x = Factor1, y = Factor2, color = region),
@@ -449,54 +378,117 @@ ggplot() +
              size = 2.5, fontface = "bold", nudge_y = 0.15,
              label.padding = unit(0.15, "lines"), show.legend = FALSE) +
   scale_color_brewer(palette = "Set1") +
-  labs(title    = "Factor Score Biplot by Region (Promax Rotation)",
-       x        = "Factor 1 — State Capacity",
-       y        = "Factor 2 — Political Legitimacy & Civil Freedom",
-       color    = "Region") +
+  labs(title = "Factor Score Biplot by Region (Promax Rotation)",
+       x     = "Factor 1 — State Capacity",
+       y     = "Factor 2 — Political Legitimacy & Civil Freedom",
+       color = "Region") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         legend.position = "right")
 
-# Individual biplots by region over time #####
+# 7c. Window centroids from df_fa (same factor space as global biplot)
+window_centroids <- df_fa %>%
+  mutate(window = case_when(
+    year >= 1996 & year <= 2000 ~ "1996–2000",
+    year >= 2019 & year <= 2023 ~ "2019–2023",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(window)) %>%
+  group_by(region, window) %>%
+  summarise(Factor1 = mean(Factor1, na.rm = TRUE),
+            Factor2 = mean(Factor2, na.rm = TRUE),
+            .groups = "drop")
 
-# Compute early and recent centroids per region in factor space
-early_scores <- as.data.frame(fa(df %>%
-                                   filter(year >= 1996 & year <= 2000) %>%
-                                   na.omit() %>%
-                                   select(all_of(gov_cols)),
-                                 nfactors = 2, rotate = "promax", fm = "ml")$scores) %>%
-  rename(Factor1 = ML1, Factor2 = ML2)
+# 7d. Country trajectory distances from df_fa
+country_trajectory <- df_fa %>%
+  mutate(window = case_when(
+    year >= 1996 & year <= 2000 ~ "early",
+    year >= 2019 & year <= 2023 ~ "recent",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(window)) %>%
+  group_by(country, country_code, region, window) %>%
+  summarise(Factor1 = mean(Factor1, na.rm = TRUE),
+            Factor2 = mean(Factor2, na.rm = TRUE),
+            .groups = "drop") %>%
+  pivot_wider(names_from = window, values_from = c(Factor1, Factor2)) %>%
+  filter(!is.na(Factor1_early) & !is.na(Factor1_recent)) %>%
+  mutate(trajectory_dist = sqrt((Factor1_recent - Factor1_early)^2 +
+                                  (Factor2_recent - Factor2_early)^2)) %>%
+  arrange(desc(trajectory_dist))
 
-recent_scores <- as.data.frame(fa(df %>%
-                                    filter(year >= 2019 & year <= 2023) %>%
-                                    na.omit() %>%
-                                    select(all_of(gov_cols)),
-                                  nfactors = 2, rotate = "promax", fm = "ml")$scores) %>%
-  rename(Factor1 = ML1, Factor2 = ML2)
-
-early_centroids <- df %>%
-  filter(year >= 1996 & year <= 2000) %>%
-  na.omit() %>%
-  bind_cols(early_scores) %>%
+# 7e. Region order by max trajectory distance
+region_order <- country_trajectory %>%
   group_by(region) %>%
-  summarise(Factor1 = mean(Factor1), Factor2 = mean(Factor2)) %>%
-  mutate(window = "1996–2000")
+  summarise(max_dist = max(trajectory_dist, na.rm = TRUE)) %>%
+  arrange(desc(max_dist)) %>%
+  pull(region)
 
-recent_centroids <- df %>%
-  filter(year >= 2019 & year <= 2023) %>%
-  na.omit() %>%
-  bind_cols(recent_scores) %>%
+df_fa <- df_fa %>% mutate(region = factor(region, levels = region_order))
+window_centroids <- window_centroids %>% mutate(region = factor(region, levels = region_order))
+
+# 7f. Bootstrap test: did region centroids shift significantly between windows?
+set.seed(437)
+B <- 1000
+
+# Observed centroid difference per region
+observed_diff <- df_fa %>%
+  mutate(window = case_when(
+    year >= 1996 & year <= 2000 ~ "early",
+    year >= 2019 & year <= 2023 ~ "recent",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(window)) %>%
+  group_by(region, window) %>%
+  summarise(Factor1 = mean(Factor1, na.rm = TRUE),
+            Factor2 = mean(Factor2, na.rm = TRUE),
+            .groups = "drop") %>%
+  pivot_wider(names_from = window, values_from = c(Factor1, Factor2)) %>%
+  mutate(obs_dist = sqrt((Factor1_recent - Factor1_early)^2 +
+                           (Factor2_recent - Factor2_early)^2))
+
+# Bootstrap: permute window labels within each region and recompute centroid distance
+bootstrap_results <- df_fa %>%
+  mutate(window = case_when(
+    year >= 1996 & year <= 2000 ~ "early",
+    year >= 2019 & year <= 2023 ~ "recent",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(window)) %>%
   group_by(region) %>%
-  summarise(Factor1 = mean(Factor1), Factor2 = mean(Factor2)) %>%
-  mutate(window = "2019–2023")
+  group_map(~ {
+    data    <- .x
+    reg     <- .y$region
+    obs     <- observed_diff %>% filter(region == reg) %>% pull(obs_dist)
+    
+    boot_dists <- replicate(B, {
+      permuted <- data %>% mutate(window = sample(window))
+      cents    <- permuted %>%
+        group_by(window) %>%
+        summarise(F1 = mean(Factor1, na.rm = TRUE),
+                  F2 = mean(Factor2, na.rm = TRUE),
+                  .groups = "drop")
+      if (nrow(cents) < 2) return(NA)
+      sqrt((cents$F1[cents$window == "recent"] - cents$F1[cents$window == "early"])^2 +
+             (cents$F2[cents$window == "recent"] - cents$F2[cents$window == "early"])^2)
+    })
+    
+    data.frame(
+      region   = reg,
+      obs_dist = obs,
+      p_value  = mean(boot_dists >= obs, na.rm = TRUE),
+      ci_95    = quantile(boot_dists, 0.95, na.rm = TRUE)
+    )
+  }, .keep = TRUE) %>%
+  bind_rows() %>%
+  mutate(significant = p_value < 0.05) %>%
+  arrange(p_value)
 
-window_centroids <- bind_rows(early_centroids, recent_centroids)
+bootstrap_results
 
-# Biplot faceted by region with trajectories + window centroids
 ggplot(df_fa, aes(x = Factor1, y = Factor2, color = year)) +
   geom_point(alpha = 0.6, size = 1) +
   geom_path(aes(group = country_code), alpha = 0.3, linewidth = 0.3) +
-  # Window centroids
   geom_point(data = window_centroids,
              aes(x = Factor1, y = Factor2, shape = window),
              color = "black", size = 4) +
@@ -504,13 +496,128 @@ ggplot(df_fa, aes(x = Factor1, y = Factor2, color = year)) +
             aes(x = Factor1, y = Factor2, group = region),
             color = "black", linewidth = 0.8, linetype = "dashed",
             arrow = arrow(length = unit(0.2, "cm"), type = "closed")) +
-  facet_wrap(~ region, ncol = 3) +
+  # p-value label
+  geom_label(data = bootstrap_results %>%
+               mutate(region     = factor(region, levels = region_order),
+                      label_text = paste0("p = ", round(p_value, 3))),
+             aes(x = Inf, y = -Inf, label = label_text),
+             inherit.aes   = FALSE,
+             hjust = 1.05, vjust = -0.3,
+             size = 3, fill = "white", color = "grey30",
+             label.padding = unit(0.3, "lines"),
+             label.r       = unit(0.15, "lines")) +
   scale_color_gradient(low = "firebrick2", high = "steelblue") +
   scale_shape_manual(values = c("1996–2000" = 15, "2019–2023" = 17)) +
+  facet_wrap(~ region, ncol = 3) +
   labs(title  = "Governance Trajectory by Region (Promax Factor Space)",
        x      = "Factor 1 — State Capacity",
        y      = "Factor 2 — Political Legitimacy & Civil Freedom",
        color  = "Year", shape = "Window") +
+  theme_minimal() +
+  theme(plot.title      = element_text(face = "bold", hjust = 0.5),
+        legend.position = "right",
+        strip.text      = element_text(face = "bold", size = 9))
+
+# 7g. Top 9 countries by trajectory distance
+top9 <- country_trajectory %>%
+  filter(!is.na(trajectory_dist)) %>%
+  slice_head(n = 9) %>%
+  mutate(rank  = row_number(),
+         label = paste0(scales::ordinal(rank), " - ", country))
+
+top9_codes  <- top9$country_code
+top9_labels <- setNames(top9$label, top9$country_code)
+
+df_fa %>%
+  filter(country_code %in% top9_codes) %>%
+  mutate(country_code = factor(country_code, levels = top9_codes)) %>%
+  ggplot(aes(x = Factor1, y = Factor2, color = year)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  geom_path(aes(group = country_code), linewidth = 0.6, alpha = 0.8) +
+  geom_label(data = df_fa %>%
+               filter(country_code %in% top9_codes) %>%
+               mutate(country_code = factor(country_code, levels = top9_codes)) %>%
+               group_by(country_code) %>%
+               filter(year == min(year) | year == max(year)) %>%
+               ungroup(),
+             aes(label = year), size = 2.5, alpha = 0.8) +
+  # Trajectory distance text box
+  geom_label(data = top9 %>%
+               mutate(country_code = factor(country_code, levels = top9_codes),
+                      label_text   = paste0("Traj dist: ", round(trajectory_dist, 2))),
+             aes(x = 2.3, y = -2.5, label = label_text),
+             inherit.aes = FALSE,
+             hjust = 1, vjust = 0,
+             size = 3, fontface = "bold",
+             fill = "white", color = "grey30",
+             label.padding = unit(0.3, "lines"),
+             label.r       = unit(0.15, "lines")) +
+  facet_wrap(~ country_code, ncol = 3,
+             labeller = labeller(country_code = top9_labels)) +
+  scale_color_gradient(low = "firebrick2", high = "steelblue") +
+  scale_x_continuous(limits = c(-2.4, 2.3)) +
+  scale_y_continuous(limits = c(-2.5, 2.3)) +
+  labs(title = "Top 9 Countries by Governance Trajectory Distance",
+       x     = "Factor 1 — State Capacity",
+       y     = "Factor 2 — Political Legitimacy & Civil Freedom",
+       color = "Year") +
+  theme_minimal() +
+  theme(plot.title      = element_text(face = "bold", hjust = 0.5),
+        legend.position = "right",
+        strip.text      = element_text(face = "bold", size = 9))
+
+# 7h. Countries furthest from the Factor1 = Factor2 diagonal
+country_diagonal <- df_fa %>%
+  group_by(country, country_code, region) %>%
+  summarise(diagonal_dist = mean(abs(Factor2 - Factor1) / sqrt(2), na.rm = TRUE),
+            avg_Factor1   = mean(Factor1, na.rm = TRUE),
+            avg_Factor2   = mean(Factor2, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(desc(diagonal_dist))
+
+top9_diag <- country_diagonal %>%
+  slice_head(n = 9) %>%
+  mutate(rank  = row_number(),
+         label = paste0(scales::ordinal(rank), " \u2014 ", country))
+
+top9_diag_codes  <- top9_diag$country_code
+top9_diag_labels <- setNames(top9_diag$label, top9_diag$country_code)
+
+df_fa %>%
+  filter(country_code %in% top9_diag_codes) %>%
+  mutate(country_code = factor(country_code, levels = top9_diag_codes)) %>%
+  ggplot(aes(x = Factor1, y = Factor2, color = year)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              color = "grey40", linewidth = 0.6) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  geom_path(aes(group = country_code), linewidth = 0.6, alpha = 0.8) +
+  geom_label(data = df_fa %>%
+               filter(country_code %in% top9_diag_codes) %>%
+               mutate(country_code = factor(country_code, levels = top9_diag_codes)) %>%
+               group_by(country_code) %>%
+               filter(year == min(year) | year == max(year)) %>%
+               ungroup(),
+             aes(label = year), size = 2.5, alpha = 0.8) +
+  # Average diagonal distance text box
+  geom_label(data = top9_diag %>%
+               mutate(country_code = factor(country_code, levels = top9_diag_codes),
+                      label_text = paste0("Avg dist: ", round(diagonal_dist, 2))),
+             aes(x = 2.5, y = -2.5, label = label_text),
+             inherit.aes = FALSE,
+             hjust = 1, vjust = 0,
+             size = 3, fontface = "bold",
+             fill = "white", color = "grey30",
+             label.padding = unit(0.3, "lines"),
+             label.r = unit(0.15, "lines")) +
+  facet_wrap(~ country_code, ncol = 3,
+             labeller = labeller(country_code = top9_diag_labels)) +
+  scale_color_gradient(low = "firebrick2", high = "steelblue") +
+  scale_x_continuous(limits = c(-2.5, 2.5)) +
+  scale_y_continuous(limits = c(-2.5, 2.5)) +
+  labs(title = "Top 9 Countries Furthest from Factor 1 = Factor 2 Diagonal (Average Over Time)",
+       x     = "Factor 1 — State Capacity",
+       y     = "Factor 2 — Political Legitimacy & Civil Freedom",
+       color = "Year") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         legend.position = "right",
