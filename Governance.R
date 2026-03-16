@@ -204,8 +204,8 @@ df %>%
   pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
   ggplot(aes(x = indicator, y = score, fill = indicator)) +
   geom_boxplot(alpha = 0.8, outlier.size = 0.8, show.legend = FALSE) +
-  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
-  labs(title = "Distribution of Governance Indicators", x = NULL, y = "Score") +
+  scale_x_discrete() +
+  labs(x = NULL, y = "Score") +
   theme_minimal()
 
 # 4d. Time window boxplots by indicator
@@ -431,22 +431,39 @@ bind_rows(
 
 # ── 7. INTERPRETATION — FACTOR SCORE BIPLOTS ── #####
 
-# 7a. Extract promax scores and join to df
-fa_scores <- as.data.frame(fa_promax$scores) %>%
+# 7a. Extract promax and varimax scores and join to df
+fa_pro_scores <- as.data.frame(fa_promax$scores) %>%
   rename(Factor1 = ML1, Factor2 = ML2)
 
-df_fa <- df %>%
+df_pro_fa <- df %>%
   na.omit() %>%
-  bind_cols(fa_scores)
+  bind_cols(fa_pro_scores)
 
-# 7b. Global biplot with regional centroids
-region_centroids <- df_fa %>%
+fa_vari_scores <- as.data.frame(fa_varimax$scores) %>%
+  rename(Factor1 = ML1, Factor2 = ML2)
+
+df_vari_fa <- df %>%
+  na.omit() %>%
+  bind_cols(fa_vari_scores)
+
+# 7b. Global biplot with regional centroids for promax and varimax
+region_centroids <- df_pro_fa %>%
   group_by(region) %>%
   summarise(Factor1 = mean(Factor1, na.rm = TRUE),
             Factor2 = mean(Factor2, na.rm = TRUE))
 
-ggplot() +
-  geom_point(data = df_fa,
+region_vari_centroids <- df_vari_fa %>%
+  group_by(region) %>%
+  summarise(Factor1 = mean(Factor1, na.rm = TRUE),
+            Factor2 = mean(Factor2, na.rm = TRUE))
+
+# Compute shared axis limits
+x_lim <- range(c(df_pro_fa$Factor1, df_vari_fa$Factor1), na.rm = TRUE)
+y_lim <- range(c(df_pro_fa$Factor2, df_vari_fa$Factor2), na.rm = TRUE)
+
+# Promax biplot
+p_promax <- ggplot() +
+  geom_point(data = df_pro_fa,
              aes(x = Factor1, y = Factor2, color = region),
              alpha = 0.3, size = 1) +
   geom_point(data = region_centroids,
@@ -457,16 +474,52 @@ ggplot() +
              size = 2.5, fontface = "bold", nudge_y = 0.15,
              label.padding = unit(0.15, "lines"), show.legend = FALSE) +
   scale_color_brewer(palette = "Set1") +
-  labs(title = "Factor Score Biplot by Region (Promax Rotation)",
-       x     = "Factor 1 — State Capacity",
-       y     = "Factor 2 — Political Legitimacy & Civil Freedom",
+  scale_x_continuous(limits = x_lim) +
+  scale_y_continuous(limits = y_lim) +
+  labs(title = "Promax Rotation",
+       x     = "Factor 1 Loading",
+       y     = "Factor 2 Loading",
        color = "Region") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
-        legend.position = "right")
+        legend.position = "none")
 
-# 7c. Window centroids from df_fa (same factor space as global biplot)
-window_centroids <- df_fa %>%
+# Varimax biplot
+p_varimax <- ggplot() +
+  geom_point(data = df_vari_fa,
+             aes(x = Factor1, y = Factor2, color = region),
+             alpha = 0.3, size = 1) +
+  geom_point(data = region_vari_centroids,
+             aes(x = Factor1, y = Factor2, color = region),
+             size = 5, shape = 18) +
+  geom_label(data = region_vari_centroids,
+             aes(x = Factor1, y = Factor2, label = region, color = region),
+             size = 2.5, fontface = "bold", nudge_y = 0.15,
+             label.padding = unit(0.15, "lines"), show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1") +
+  scale_x_continuous(limits = x_lim) +
+  scale_y_continuous(limits = y_lim) +
+  labs(title = "Varimax Rotation",
+       x     = "Factor 1 Loading",
+       y     = NULL,
+       color = "Region") +
+  theme_minimal() +
+  theme(plot.title      = element_text(face = "bold", hjust = 0.5),
+        axis.text.y     = element_blank(),
+        axis.ticks.y    = element_blank(),
+        legend.position = "none")
+
+region_levels <- sort(unique(df_pro_fa$region))  # or define manually
+
+df_pro_fa$region        <- factor(df_pro_fa$region,        levels = region_levels)
+df_vari_fa$region       <- factor(df_vari_fa$region,       levels = region_levels)
+region_centroids$region <- factor(region_centroids$region, levels = region_levels)
+region_vari_centroids$region <- factor(region_vari_centroids$region, levels = region_levels)
+
+p_promax + p_varimax
+
+# 7c. Window centroids from df_pro_fa (same factor space as global biplot)
+window_centroids <- df_pro_fa %>%
   mutate(window = case_when(
     year >= 1996 & year <= 2000 ~ "1996–2000",
     year >= 2019 & year <= 2023 ~ "2019–2023",
@@ -478,8 +531,8 @@ window_centroids <- df_fa %>%
             Factor2 = mean(Factor2, na.rm = TRUE),
             .groups = "drop")
 
-# 7d. Country trajectory distances from df_fa
-country_trajectory <- df_fa %>%
+# 7d. Country trajectory distances from df_pro_fa
+country_trajectory <- df_pro_fa %>%
   mutate(window = case_when(
     year >= 1996 & year <= 2000 ~ "early",
     year >= 2019 & year <= 2023 ~ "recent",
@@ -503,7 +556,7 @@ region_order <- country_trajectory %>%
   arrange(desc(max_dist)) %>%
   pull(region)
 
-df_fa <- df_fa %>% mutate(region = factor(region, levels = region_order))
+df_pro_fa <- df_pro_fa %>% mutate(region = factor(region, levels = region_order))
 window_centroids <- window_centroids %>% mutate(region = factor(region, levels = region_order))
 
 # 7f. Bootstrap test: did region centroids shift significantly between windows?
@@ -511,7 +564,7 @@ set.seed(437)
 B <- 1000
 
 # Observed centroid difference per region
-observed_diff <- df_fa %>%
+observed_diff <- df_pro_fa %>%
   mutate(window = case_when(
     year >= 1996 & year <= 2000 ~ "early",
     year >= 2019 & year <= 2023 ~ "recent",
@@ -527,7 +580,7 @@ observed_diff <- df_fa %>%
                            (Factor2_recent - Factor2_early)^2))
 
 # Bootstrap: permute window labels within each region and recompute centroid distance
-bootstrap_results <- df_fa %>%
+bootstrap_results <- df_pro_fa %>%
   mutate(window = case_when(
     year >= 1996 & year <= 2000 ~ "early",
     year >= 2019 & year <= 2023 ~ "recent",
@@ -565,16 +618,12 @@ bootstrap_results <- df_fa %>%
 
 bootstrap_results
 
-ggplot(df_fa, aes(x = Factor1, y = Factor2, color = year)) +
+ggplot(df_pro_fa, aes(x = Factor1, y = Factor2, color = year)) +
   geom_point(alpha = 0.6, size = 1) +
   geom_path(aes(group = country_code), alpha = 0.3, linewidth = 0.3) +
   geom_point(data = window_centroids,
              aes(x = Factor1, y = Factor2, shape = window),
              color = "black", size = 4) +
-  geom_line(data = window_centroids,
-            aes(x = Factor1, y = Factor2, group = region),
-            color = "black", linewidth = 0.8, linetype = "dashed",
-            arrow = arrow(length = unit(0.2, "cm"), type = "closed")) +
   # p-value label
   geom_label(data = bootstrap_results %>%
                mutate(region     = factor(region, levels = region_order),
@@ -588,10 +637,9 @@ ggplot(df_fa, aes(x = Factor1, y = Factor2, color = year)) +
   scale_color_gradient(low = "firebrick2", high = "steelblue") +
   scale_shape_manual(values = c("1996–2000" = 15, "2019–2023" = 17)) +
   facet_wrap(~ region, ncol = 3) +
-  labs(title  = "Governance Trajectory by Region (Promax Factor Space)",
-       x      = "Factor 1 — State Capacity",
-       y      = "Factor 2 — Political Legitimacy & Civil Freedom",
-       color  = "Year", shape = "Window") +
+  labs(x      = "Factor 1 Loadings",
+       y      = "Factor 2 Loadings",
+       color  = "Year", shape = "Window\nMidpoint") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         legend.position = "right",
@@ -607,13 +655,13 @@ top9 <- country_trajectory %>%
 top9_codes  <- top9$country_code
 top9_labels <- setNames(top9$label, top9$country_code)
 
-df_fa %>%
+p_traj <- df_pro_fa %>%
   filter(country_code %in% top9_codes) %>%
   mutate(country_code = factor(country_code, levels = top9_codes)) %>%
   ggplot(aes(x = Factor1, y = Factor2, color = year)) +
   geom_point(alpha = 0.6, size = 1.5) +
   geom_path(aes(group = country_code), linewidth = 0.6, alpha = 0.8) +
-  geom_label(data = df_fa %>%
+  geom_label(data = df_pro_fa %>%
                filter(country_code %in% top9_codes) %>%
                mutate(country_code = factor(country_code, levels = top9_codes)) %>%
                group_by(country_code) %>%
@@ -634,11 +682,11 @@ df_fa %>%
   facet_wrap(~ country_code, ncol = 3,
              labeller = labeller(country_code = top9_labels)) +
   scale_color_gradient(low = "firebrick2", high = "steelblue") +
-  scale_x_continuous(limits = c(-2.4, 2.3)) +
-  scale_y_continuous(limits = c(-2.5, 2.3)) +
-  labs(title = "Top 9 Countries by Governance Trajectory Distance",
-       x     = "Factor 1 — State Capacity",
-       y     = "Factor 2 — Political Legitimacy & Civil Freedom",
+  scale_x_continuous(limits = c(-2.5, 2.5)) +
+  scale_y_continuous(limits = c(-2.5, 2.5)) +
+  labs(title = "Governance Trajectory Distance",
+       x     = "Factor 1",
+       y     = "Factor 2",
        color = "Year") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
@@ -646,7 +694,7 @@ df_fa %>%
         strip.text      = element_text(face = "bold", size = 9))
 
 # 7h. Countries furthest from the Factor1 = Factor2 diagonal
-country_diagonal <- df_fa %>%
+country_diagonal <- df_pro_fa %>%
   group_by(country, country_code, region) %>%
   summarise(diagonal_dist = mean(abs(Factor2 - Factor1) / sqrt(2), na.rm = TRUE),
             avg_Factor1   = mean(Factor1, na.rm = TRUE),
@@ -662,7 +710,7 @@ top9_diag <- country_diagonal %>%
 top9_diag_codes  <- top9_diag$country_code
 top9_diag_labels <- setNames(top9_diag$label, top9_diag$country_code)
 
-df_fa %>%
+p_diag_dist <- df_pro_fa %>%
   filter(country_code %in% top9_diag_codes) %>%
   mutate(country_code = factor(country_code, levels = top9_diag_codes)) %>%
   ggplot(aes(x = Factor1, y = Factor2, color = year)) +
@@ -670,7 +718,7 @@ df_fa %>%
               color = "grey40", linewidth = 0.6) +
   geom_point(alpha = 0.6, size = 1.5) +
   geom_path(aes(group = country_code), linewidth = 0.6, alpha = 0.8) +
-  geom_label(data = df_fa %>%
+  geom_label(data = df_pro_fa %>%
                filter(country_code %in% top9_diag_codes) %>%
                mutate(country_code = factor(country_code, levels = top9_diag_codes)) %>%
                group_by(country_code) %>%
@@ -693,11 +741,27 @@ df_fa %>%
   scale_color_gradient(low = "firebrick2", high = "steelblue") +
   scale_x_continuous(limits = c(-2.5, 2.5)) +
   scale_y_continuous(limits = c(-2.5, 2.5)) +
-  labs(title = "Top 9 Countries Furthest from Factor 1 = Factor 2 Diagonal (Average Over Time)",
-       x     = "Factor 1 — State Capacity",
-       y     = "Factor 2 — Political Legitimacy & Civil Freedom",
+  labs(title = "Furthest from Factor 1 = Factor 2 Diagonal",
+       x     = "Factor 1",
+       y     = "Factor 2",
        color = "Year") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         legend.position = "right",
         strip.text      = element_text(face = "bold", size = 9))
+
+library(cowplot)
+
+p_traj_nl    <- p_traj      + theme(legend.position = "none")
+p_diag_nl    <- p_diag_dist + theme(legend.position = "none")
+
+shared_legend <- get_legend(
+  p_traj + theme(legend.position = "right")
+)
+
+plot_grid(
+  p_traj_nl, p_diag_nl, shared_legend,
+  nrow       = 1,
+  rel_widths = c(1, 1, 0.1)
+)
+  
