@@ -255,6 +255,8 @@ wrap_plots(region_cor_plots, ncol = 3) +
 
 # 5c. Normality — Mardia's test + QQ plot + negentropy
 
+fa_data <- df %>% select(all_of(gov_cols)) %>% na.omit()
+
 # Mardia's test
 mardia_result <- mvn(fa_data, mvnTest = "mardia", multivariatePlot = "qq")
 
@@ -268,7 +270,6 @@ neg_entropy <- df %>%
 neg_entropy
 
 # 5d. Sampling adequacy
-fa_data <- df %>% select(all_of(gov_cols)) %>% na.omit()
 
 KMO(fa_data)
 cortest.bartlett(cor_matrix, n = nrow(fa_data))
