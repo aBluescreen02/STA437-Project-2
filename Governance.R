@@ -5,7 +5,8 @@ library(patchwork)
 library(psych)
 library(DescTools)
 library(maps)
-# library(MVN)
+library(MVN)
+library(cowplot)
 
 # ── 1. DATA LOADING & PREPARATION ── #####
 
@@ -151,133 +152,56 @@ missing_by_year
 
 # ── 4. EXPLORATORY DATA ANALYSIS ── #####
 
-# 4a. Per-country time series
-country_list <- df %>% split(.$country_code)
+# 4a. Regional composite boxplots
+region_order <- df %>%
+  mutate(composite = rowSums(across(all_of(gov_cols)), na.rm = TRUE)) %>%
+  group_by(region) %>%
+  summarise(median_composite = median(composite, na.rm = TRUE)) %>%
+  arrange(median_composite) %>%
+  pull(region)
 
-plot_country <- function(code) {
-  country_list[[code]] %>%
-    pivot_longer(cols = all_of(gov_cols), names_to = "group", values_to = "score") %>%
-    ggplot(aes(x = year, y = score, color = group)) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 1.5) +
-    labs(title = paste(code, "Governance Indicators Over Time"),
-         x = "Year", y = "Score", color = "Indicator") +
-    scale_color_brewer(palette = "Dark2") +
-    theme_minimal() +
-    theme(legend.position = "bottom")
-}
-
-plot_country("CAN")
-plot_country("USA")
-
-# 4b. Regional time series with IQR ribbon
-country_means_time <- df %>%
-  pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
-  group_by(country_code, region, year, indicator) %>%
-  summarise(score = mean(score, na.rm = TRUE), .groups = "drop")
-
-region_means_time <- country_means_time %>%
-  group_by(region, year, indicator) %>%
-  summarise(score = mean(score, na.rm = TRUE), .groups = "drop")
-
-ggplot() +
-  geom_ribbon(data = country_means_time %>%
-                group_by(region, year, indicator) %>%
-                summarise(lower = quantile(score, 0.25, na.rm = TRUE),
-                          upper = quantile(score, 0.75, na.rm = TRUE),
-                          .groups = "drop"),
-              aes(x = year, ymin = lower, ymax = upper, fill = region),
-              alpha = 0.2) +
-  geom_line(data = region_means_time,
-            aes(x = year, y = score, color = region, group = region),
-            linewidth = 1.2) +
-  facet_wrap(~ indicator, ncol = 3) +
-  scale_color_brewer(palette = "Set3") +
-  scale_fill_brewer(palette  = "Set3") +
-  labs(title = "Governance Indicators Over Time by Region",
-       x = "Year", y = "Score", color = "Region", fill = "Region") +
-  theme_minimal() +
-  theme(legend.position = "right")
-
-# 4c. Indicator distribution boxplots
-df %>%
-  pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
-  ggplot(aes(x = indicator, y = score, fill = indicator)) +
-  geom_boxplot(alpha = 0.8, outlier.size = 0.8, show.legend = FALSE) +
-  scale_x_discrete() +
-  labs(x = NULL, y = "Score") +
-  theme_minimal()
-
-# 4d. Time window boxplots by indicator
-bind_rows(
-  country_scores_early  %>%
-    pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
-    mutate(window = "1996–2000"),
-  country_scores_recent %>%
-    pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "score") %>%
-    mutate(window = "2019–2023")
-) %>%
-  ggplot(aes(x = indicator, y = score, fill = window)) +
-  geom_boxplot(alpha = 0.7, outlier.size = 0.8, position = position_dodge(0.8)) +
-  scale_fill_manual(values = c("1996–2000" = "steelblue", "2019–2023" = "tomato")) +
-  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
-  labs(title = "Governance Indicators: 1996–2000 vs 2019–2023",
-       x = "Indicator", y = "Score", fill = "Year Window") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-# 4e. Regional composite boxplots
-country_scores_combined %>%
+p_early_vs_recent_box <- country_scores_combined %>%
   select(country, country_code, region, composite_score_early, composite_score_recent) %>%
   pivot_longer(cols = c(composite_score_early, composite_score_recent),
                names_to = "window", values_to = "composite") %>%
-  mutate(window = recode(window,
+  mutate(region = factor(region, levels = region_order),
+         window = recode(window,
                          "composite_score_early"  = "1996–2000",
                          "composite_score_recent" = "2019–2023")) %>%
-  ggplot(aes(x = reorder(region, composite, FUN = median), y = composite, fill = window)) +
+  ggplot(aes(x = region, y = composite, fill = window)) +
   geom_boxplot(alpha = 0.8, outlier.size = 0.8, position = position_dodge(0.8)) +
   geom_jitter(aes(group = window),
               position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8),
               size = 0.7, alpha = 0.4) +
-  coord_flip() +
   scale_fill_manual(values = c("1996–2000" = "steelblue", "2019–2023" = "tomato")) +
-  labs(title = "Composite Score by Region: Early vs Recent",
+  labs(title = "Early vs Recent",
        x = NULL, y = "Composite Score", fill = "Window") +
   theme_minimal() +
-  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+  theme(legend.position = "bottom",
+        axis.text.x = element_blank(),
+        plot.title = element_text(hjust = 0.5))
 
-country_scores_combined %>%
-  ggplot(aes(x = reorder(region, score_diff, FUN = median), y = score_diff, fill = region)) +
-  geom_boxplot(alpha = 0.8, outlier.size = 0.8, show.legend = FALSE) +
-  geom_jitter(width = 0.15, size = 0.8, alpha = 0.4, show.legend = FALSE) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "black", alpha = 0.6) +
-  coord_flip() +
-  scale_fill_brewer(palette = "Set3") +
-  labs(title = "Change in Composite Score by Region",
-       x = NULL, y = "Score Difference") +
-  theme_minimal() +
-  theme(plot.title = element_text(face = "bold"))
-
-df %>%
-  mutate(composite = rowSums(across(all_of(gov_cols)), na.rm = TRUE)) %>%
-  ggplot(aes(x = reorder(region, composite, FUN = median), y = composite, fill = region)) +
+p_violin <- df %>%
+  mutate(composite = rowSums(across(all_of(gov_cols)), na.rm = TRUE),
+         region = factor(region, levels = region_order)) %>%
+  ggplot(aes(x = region, y = composite, fill = region)) +
   geom_violin(alpha = 0.8, trim = FALSE, show.legend = FALSE) +
   geom_boxplot(width = 0.1, alpha = 0.4, outlier.shape = NA, show.legend = FALSE) +
-  coord_flip() +
   scale_fill_brewer(palette = "Set3") +
-  labs(title = "Overall Composite Score by Region (1996–2023)",
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  labs(title = "1996–2023",
        x = NULL, y = "Composite Score") +
   theme_minimal() +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
 
-# 4f. Regional mean heatmap
+# 4b. Regional mean heatmap
 region_means <- df %>%
   group_by(region) %>%
   summarise(across(all_of(gov_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
   mutate(composite_score = rowSums(across(all_of(gov_cols)), na.rm = TRUE)) %>%
   arrange(desc(composite_score))
 
-region_means %>%
+p_region_means <- region_means %>%
   pivot_longer(cols = all_of(gov_cols), names_to = "indicator", values_to = "mean_score") %>%
   ggplot(aes(x = indicator, y = reorder(region, mean_score, FUN = mean), fill = mean_score)) +
   geom_tile() +
@@ -288,20 +212,25 @@ region_means %>%
        x = NULL, y = NULL, fill = "Mean Score") +
   theme_minimal()
 
+(p_region_means | ((p_violin + ggtitle("Composite Governance Scores by Region\n(1996-2023)")) / p_early_vs_recent_box)) +
+  plot_layout(widths = c(1, 2.2))
+
 # ── 5. ASSUMPTION TESTING ── #####
 
-# 5a. Correlation matrix
+# 5a. Correlation heatmap
 cor_matrix <- df %>%
   select(all_of(gov_cols)) %>%
   cor(use = "complete.obs")
 
-ggcorrplot(cor_matrix, method = "square", type = "full", lab = TRUE, lab_size = 4) +
+p_corr <- ggcorrplot(cor_matrix, method = "square", type = "full", lab = TRUE, lab_size = 4) +
   scale_x_discrete(limits = rev, guide = guide_axis(n.dodge = 2)) +
   scale_fill_gradient2(name = "Pearson\nCorrelation",
                        low = "steelblue", mid = "white", high = "firebrick2",
                        midpoint = 0, limits = c(-1, 1)) +
   theme(axis.text.x = element_text(size = 10, angle = 0, hjust = 0.5),
-        axis.text.y = element_text(size = 10))
+        axis.text.y = element_text(size = 10, angle = 0, hjust = 0.5),
+        legend.position = "left",
+        legend.key.height = unit(1.5, "cm"))
 
 # 5b. Correlation by region
 region_cor_plots <- df %>%
@@ -327,7 +256,7 @@ wrap_plots(region_cor_plots, ncol = 3) +
 # 5c. Normality — Mardia's test + QQ plot + negentropy
 
 # Mardia's test
-# mardia_result <- mvn(fa_data, mvnTest = "mardia", multivariatePlot = "qq")
+mardia_result <- mvn(fa_data, mvnTest = "mardia", multivariatePlot = "qq")
 
 neg_entropy <- df %>%
   select(all_of(gov_cols)) %>%
@@ -361,7 +290,7 @@ n_factors <- 2
 y_max     <- max(pa_df$observed) * 1.1
 scale_f   <- y_max / 100
 
-ggplot(pa_df, aes(x = factor)) +
+p_scree <- ggplot(pa_df, aes(x = factor)) +
   annotate("rect", xmin = 0.5, xmax = n_factors + 0.5,
            ymin = -Inf, ymax = Inf, fill = "steelblue", alpha = 0.1) +
   geom_line(aes(y = observed,          color = "Observed eigenvalues"), linewidth = 1) +
@@ -410,7 +339,7 @@ loadings_long <- function(fa_model, rotation_name) {
     mutate(rotation = rotation_name)
 }
 
-bind_rows(
+p_loadings <- bind_rows(
   loadings_long(fa_none,    "No Rotation"),
   loadings_long(fa_varimax, "Varimax"),
   loadings_long(fa_promax,  "Promax")
@@ -422,12 +351,15 @@ bind_rows(
   scale_fill_gradient2(low = "steelblue", mid = "white", high = "firebrick2",
                        midpoint = 0, limits = c(-1, 1), name = "Loading") +
   facet_wrap(~ rotation, ncol = 3) +
-  labs(title = "Factor Loadings by Rotation Method", x = "Factor", y = NULL) +
+  labs(title = NULL, x = NULL, y = NULL) +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         strip.text      = element_text(face = "bold", size = 11),
         axis.text.y     = element_text(size = 10),
-        legend.position = "right")
+        legend.position = "none")
+
+p_corr | (p_loadings / p_scree + plot_layout(heights = c(1, 1.2))) +
+  plot_layout(widths = c(1, 2))
 
 # ── 7. INTERPRETATION — FACTOR SCORE BIPLOTS ── #####
 
@@ -468,17 +400,13 @@ p_promax <- ggplot() +
              alpha = 0.3, size = 1) +
   geom_point(data = region_centroids,
              aes(x = Factor1, y = Factor2, color = region),
-             size = 5, shape = 18) +
-  geom_label(data = region_centroids,
-             aes(x = Factor1, y = Factor2, label = region, color = region),
-             size = 2.5, fontface = "bold", nudge_y = 0.15,
-             label.padding = unit(0.15, "lines"), show.legend = FALSE) +
+             size = 5, shape = 21, fill = "white", stroke = 2) +
   scale_color_brewer(palette = "Set1") +
   scale_x_continuous(limits = x_lim) +
   scale_y_continuous(limits = y_lim) +
   labs(title = "Promax Rotation",
-       x     = "Factor 1 Loading",
-       y     = "Factor 2 Loading",
+       x     = "Factor 1 - State Effectiveness",
+       y     = "Factor 2 - Civil Order & Accountability",
        color = "Region") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
@@ -491,23 +419,19 @@ p_varimax <- ggplot() +
              alpha = 0.3, size = 1) +
   geom_point(data = region_vari_centroids,
              aes(x = Factor1, y = Factor2, color = region),
-             size = 5, shape = 18) +
-  geom_label(data = region_vari_centroids,
-             aes(x = Factor1, y = Factor2, label = region, color = region),
-             size = 2.5, fontface = "bold", nudge_y = 0.15,
-             label.padding = unit(0.15, "lines"), show.legend = FALSE) +
+             size = 5, shape = 21, fill = "white", stroke = 2) +
   scale_color_brewer(palette = "Set1") +
   scale_x_continuous(limits = x_lim) +
   scale_y_continuous(limits = y_lim) +
   labs(title = "Varimax Rotation",
-       x     = "Factor 1 Loading",
+       x     = "Factor 1 - State Effectiveness",
        y     = NULL,
        color = "Region") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         axis.text.y     = element_blank(),
         axis.ticks.y    = element_blank(),
-        legend.position = "none")
+        legend.position = "bottom")
 
 region_levels <- sort(unique(df_pro_fa$region))  # or define manually
 
@@ -637,8 +561,8 @@ ggplot(df_pro_fa, aes(x = Factor1, y = Factor2, color = year)) +
   scale_color_gradient(low = "firebrick2", high = "steelblue") +
   scale_shape_manual(values = c("1996–2000" = 15, "2019–2023" = 17)) +
   facet_wrap(~ region, ncol = 3) +
-  labs(x      = "Factor 1 Loadings",
-       y      = "Factor 2 Loadings",
+  labs(x      = "Factor 1 - State Effectiveness",
+       y      = "Factor 2 - Civil Order & Accountability",
        color  = "Year", shape = "Window\nMidpoint") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
@@ -685,8 +609,8 @@ p_traj <- df_pro_fa %>%
   scale_x_continuous(limits = c(-2.5, 2.5)) +
   scale_y_continuous(limits = c(-2.5, 2.5)) +
   labs(title = "Governance Trajectory Distance",
-       x     = "Factor 1",
-       y     = "Factor 2",
+       x     = "Factor 1 - State Effectiveness",
+       y     = "Factor 2 - Civil Order & Accountability",
        color = "Year") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
@@ -705,7 +629,7 @@ country_diagonal <- df_pro_fa %>%
 top9_diag <- country_diagonal %>%
   slice_head(n = 9) %>%
   mutate(rank  = row_number(),
-         label = paste0(scales::ordinal(rank), " \u2014 ", country))
+         label = paste0(scales::ordinal(rank), " - ", country))
 
 top9_diag_codes  <- top9_diag$country_code
 top9_diag_labels <- setNames(top9_diag$label, top9_diag$country_code)
@@ -742,15 +666,13 @@ p_diag_dist <- df_pro_fa %>%
   scale_x_continuous(limits = c(-2.5, 2.5)) +
   scale_y_continuous(limits = c(-2.5, 2.5)) +
   labs(title = "Furthest from Factor 1 = Factor 2 Diagonal",
-       x     = "Factor 1",
-       y     = "Factor 2",
+       x     = "Factor 1 - State Effectiveness",
+       y     = NULL,
        color = "Year") +
   theme_minimal() +
   theme(plot.title      = element_text(face = "bold", hjust = 0.5),
         legend.position = "right",
         strip.text      = element_text(face = "bold", size = 9))
-
-library(cowplot)
 
 p_traj_nl    <- p_traj      + theme(legend.position = "none")
 p_diag_nl    <- p_diag_dist + theme(legend.position = "none")
